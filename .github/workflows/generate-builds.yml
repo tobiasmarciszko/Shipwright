@@ -62,7 +62,16 @@ jobs:
         conf=/opt/local/etc/macports/macports.conf
         grep -q '^macosx_deployment_target' "$conf" || echo 'macosx_deployment_target 11.0' | sudo tee -a "$conf"
         grep -q '^buildfromsource' "$conf" || echo 'buildfromsource always' | sudo tee -a "$conf"
-        sudo port -N install libsdl2 libsdl2_net libpng glew libzip nlohmann-json tinyxml2 libogg libopus opusfile libvorbis +universal
+        # Downloads from the MacPorts mirrors fail now and then; ports that are
+        # already installed are kept, so retrying only redoes the failed one.
+        for attempt in 1 2 3 4 5; do
+          if sudo port -N install libsdl2 libsdl2_net libpng glew libzip nlohmann-json tinyxml2 libogg libopus opusfile libvorbis +universal; then
+            exit 0
+          fi
+          echo "port install failed (attempt $attempt), retrying in 60s"
+          sleep 60
+        done
+        exit 1
     - name: Configure ccache
       uses: hendrikmuhs/ccache-action@v1.2.23
       with:
