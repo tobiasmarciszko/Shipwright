@@ -54,6 +54,24 @@ jobs:
         submodules: true
     - name: Setup Macports
       uses: melusina-org/setup-macports@v1
+    - name: Look up cached macOS 11 dependencies
+      id: deps-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: /opt/local
+        key: macports-macos11-deps-v1
+        lookup-only: true
+    - name: Clear MacPorts prefix before restoring
+      if: steps.deps-cache.outputs.cache-hit == 'true'
+      run: |
+        sudo rm -rf /opt/local
+        sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 755 /opt/local
+    - name: Restore cached macOS 11 dependencies
+      if: steps.deps-cache.outputs.cache-hit == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: /opt/local
+        key: macports-macos11-deps-v1
     - name: Build dependencies for macOS 11
       run: |
         # Prebuilt MacPorts archives target the runner's OS (macOS 14) and fail
@@ -72,6 +90,13 @@ jobs:
           sleep 60
         done
         exit 1
+    - name: Save macOS 11 dependencies
+      if: steps.deps-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: /opt/local
+        key: macports-macos11-deps-v1
     - name: Configure ccache
       uses: hendrikmuhs/ccache-action@v1.2.23
       with:
