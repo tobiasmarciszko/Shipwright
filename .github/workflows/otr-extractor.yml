@@ -1,0 +1,106 @@
+name: otr-extractor
+on:
+  push:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-extractor:
+    runs-on: macos-15-intel
+    env:
+      DEPS_CACHE_KEY: macports-macos11-x86_64-extractor-deps-v1
+    steps:
+    - name: Checkout packaging scripts
+      uses: actions/checkout@v7
+      with:
+        path: self
+    - name: Checkout Ship of Harkinian 8.0.6
+      uses: actions/checkout@v7
+      with:
+        repository: HarbourMasters/Shipwright
+        ref: '8.0.6'
+        submodules: recursive
+        path: src
+    - name: Setup Macports
+      uses: melusina-org/setup-macports@v1
+    - name: Look up cached macOS 11 dependencies
+      id: deps-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: /opt/local
+        key: ${{ env.DEPS_CACHE_KEY }}
+        lookup-only: true
+    - name: Clear MacPorts prefix before restoring
+      if: steps.deps-cache.outputs.cache-hit == 'true'
+      run: |
+        sudo rm -rf /opt/local
+        sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 755 /opt/local
+    - name: Restore cached macOS 11 dependencies
+      if: steps.deps-cache.outputs.cache-hit == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: /opt/local
+        key: ${{ env.DEPS_CACHE_KEY }}
+    - name: Build dependencies for macOS 11
+      run: |
+        # Prebuilt MacPorts archives target the runner's OS and fail to load
+        # on older systems, so build from source with an explicit target.
+        conf=/opt/local/etc/macports/macports.conf
+        grep -q '^macosx_deployment_target' "$conf" || echo 'macosx_deployment_target 11.0' | sudo tee -a "$conf"
+        grep -q '^buildfromsource' "$conf" || echo 'buildfromsource always' | sudo tee -a "$conf"
+        # Downloads from the MacPorts mirrors fail now and then; ports that are
+        # already installed are kept, so retrying only redoes the failed one.
+        for attempt in 1 2 3 4 5; do
+          if sudo port -N install libsdl2 glew libpng; then
+            exit 0
+          fi
+          echo "port install failed (attempt $attempt), retrying in 60s"
+          sleep 60
+        done
+        exit 1
+    - name: Save macOS 11 dependencies
+      if: steps.deps-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: /opt/local
+        key: ${{ env.DEPS_CACHE_KEY }}
+    - name: Build ZAPD
+      run: |
+        cmake -S src -B build -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+          -DCMAKE_PREFIX_PATH=/opt/local
+        cmake --build build --target ZAPD -j "$(sysctl -n hw.ncpu)"
+    - name: Package extractor
+      run: bash self/.github/extractor/package.sh src build SoH-8.0.6-OTR-Extractor
+    - name: Verify macOS 11 compatibility
+      run: |
+        fail=0
+        while IFS= read -r f; do
+          file -b "$f" | grep -q 'Mach-O' || continue
+          for v in $(vtool -show-build "$f" | awk '$1=="minos"||$1=="version"{print $2}'); do
+            echo "$v $f"
+            if [ "${v%%.*}" -gt 11 ]; then fail=1; echo "::error::$f requires macOS $v"; fi
+          done
+        done < <(find SoH-8.0.6-OTR-Extractor/ZAPD -type f)
+        exit $fail
+    - name: Smoke test without MacPorts
+      run: |
+        # Hide /opt/local so the test proves the bundled libraries are used.
+        sudo mv /opt/local /opt/local.hidden
+        trap 'sudo mv /opt/local.hidden /opt/local' EXIT
+        cd SoH-8.0.6-OTR-Extractor/OTRExporter
+        python3 extract_assets.py -z ../ZAPD/ZAPD.out --norom \
+          --custom-otr-file soh.otr --custom-assets-path ../soh/assets/custom --port-ver 8.0.6
+        test -s soh.otr
+        ls -l soh.otr
+        rm soh.otr
+    - name: Zip extractor
+      # Zipped here so the executable permission survives the artifact upload.
+      run: ditto -c -k --keepParent SoH-8.0.6-OTR-Extractor SoH-8.0.6-OTR-Extractor.zip
+    - name: Upload extractor
+      uses: actions/upload-artifact@v7
+      with:
+        name: SoH-8.0.6-OTR-Extractor
+        path: SoH-8.0.6-OTR-Extractor.zip
